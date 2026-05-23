@@ -589,15 +589,20 @@ export class InstagramProvider
 
         let status = 'IN_PROGRESS';
         while (status === 'IN_PROGRESS') {
-          const { status_code } = await (
+          // Meta restricted direct GET on media container objects circa 2026-05-23
+          // (returns Authorization Error code 100/33 / GraphMethodException). The
+          // batch query form `?ids=X&fields=Y` still works and returns the result
+          // wrapped as `{ X: { Y: value } }`, so we unwrap by `photoId`.
+          const statusResponse = await (
             await this.fetch(
-              `https://${type}/v20.0/${photoId}?access_token=${accessToken}&fields=status_code`,
+              `https://${type}/v20.0/?ids=${photoId}&access_token=${accessToken}&fields=status_code`,
               undefined,
               '',
               0,
               true
             )
           ).json();
+          const status_code = statusResponse?.[photoId]?.status_code;
           await timer(30000);
           status = status_code;
         }
@@ -622,11 +627,14 @@ export class InstagramProvider
         ).json();
         lastMediaId = mediaId;
 
-        const { permalink } = await (
+        // Direct GET on media objects rejected by Meta circa 2026-05-23 — use
+        // batch query form, unwrap by `mediaId`. See status_code comment above.
+        const permalinkResponse = await (
           await this.fetch(
-            `https://${type}/v20.0/${mediaId}?fields=permalink&access_token=${accessToken}`
+            `https://${type}/v20.0/?ids=${mediaId}&fields=permalink&access_token=${accessToken}`
           )
         ).json();
+        const permalink = permalinkResponse?.[mediaId]?.permalink;
         lastPermalink = permalink;
       }
 
@@ -648,11 +656,14 @@ export class InstagramProvider
         )
       ).json();
 
-      const { permalink } = await (
+      // Direct GET on media objects rejected by Meta circa 2026-05-23 — use
+      // batch query form, unwrap by `mediaId`. See status_code comment above.
+      const permalinkResponse = await (
         await this.fetch(
-          `https://${type}/v20.0/${mediaId}?fields=permalink&access_token=${accessToken}`
+          `https://${type}/v20.0/?ids=${mediaId}&fields=permalink&access_token=${accessToken}`
         )
       ).json();
+      const permalink = permalinkResponse?.[mediaId]?.permalink;
 
       return [
         {
@@ -678,15 +689,17 @@ export class InstagramProvider
 
       let status = 'IN_PROGRESS';
       while (status === 'IN_PROGRESS') {
-        const { status_code } = await (
+        // Batch query form — see status_code comment above (line 591).
+        const statusResponse = await (
           await this.fetch(
-            `https://${type}/v20.0/${containerId}?fields=status_code&access_token=${accessToken}`,
+            `https://${type}/v20.0/?ids=${containerId}&access_token=${accessToken}&fields=status_code`,
             undefined,
             '',
             0,
             true
           )
         ).json();
+        const status_code = statusResponse?.[containerId]?.status_code;
         await timer(30000);
         status = status_code;
       }
@@ -700,11 +713,13 @@ export class InstagramProvider
         )
       ).json();
 
-      const { permalink } = await (
+      // Batch query form for permalink — see comment above (line 633).
+      const permalinkResponse = await (
         await this.fetch(
-          `https://${type}/v20.0/${mediaId}?fields=permalink&access_token=${accessToken}`
+          `https://${type}/v20.0/?ids=${mediaId}&fields=permalink&access_token=${accessToken}`
         )
       ).json();
+      const permalink = permalinkResponse?.[mediaId]?.permalink;
 
       return [
         {
@@ -739,12 +754,14 @@ export class InstagramProvider
       )
     ).json();
 
-    // Get the permalink from the parent post
-    const { permalink } = await (
+    // Get the permalink from the parent post. Batch query form — see comment
+    // above (line 633) on the Meta API change.
+    const permalinkResponse = await (
       await this.fetch(
-        `https://${type}/v20.0/${postId}?fields=permalink&access_token=${accessToken}`
+        `https://${type}/v20.0/?ids=${postId}&fields=permalink&access_token=${accessToken}`
       )
     ).json();
+    const permalink = permalinkResponse?.[postId]?.permalink;
 
     return [
       {
