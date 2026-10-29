@@ -23,6 +23,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 import { GetPostsDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.dto';
+import { ChangePostStatusDto } from '@gitroom/nestjs-libraries/dtos/posts/change.post.status.dto';
 import {
   AuthorizationActions,
   Sections,
@@ -32,8 +33,8 @@ import { VideoFunctionDto } from '@gitroom/nestjs-libraries/dtos/videos/video.fu
 import { UploadDto } from '@gitroom/nestjs-libraries/dtos/media/upload.dto';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
 import { GetNotificationsDto } from '@gitroom/nestjs-libraries/dtos/notifications/get.notifications.dto';
-import axios from 'axios';
 import { Readable } from 'stream';
+import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { fromBuffer } = require('file-type');
 
@@ -48,7 +49,10 @@ const PUBLIC_API_ALLOWED_MIME = new Set<string>([
   'video/mp4',
 ]);
 import * as Sentry from '@sentry/nestjs';
-import { socialIntegrationList, IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import {
+  socialIntegrationList,
+  IntegrationManager,
+} from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { getValidationSchemas } from '@gitroom/nestjs-libraries/chat/validation.schemas.helper';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abstract';
@@ -95,11 +99,14 @@ export class PublicIntegrationsController {
     @Body() body: UploadDto
   ) {
     Sentry.metrics.count('public_api-request', 1);
-    const response = await axios.get(body.url, {
-      responseType: 'arraybuffer',
+    const response = await fetch(body.url, {
+      // @ts-ignore — undici option, not in lib.dom fetch types
+      dispatcher: ssrfSafeDispatcher,
     });
-
-    const buffer = Buffer.from(response.data);
+    if (!response.ok) {
+      throw new HttpException({ msg: 'Failed to fetch URL' }, 400);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
     const detected = await fromBuffer(buffer);
     if (!detected || !PUBLIC_API_ALLOWED_MIME.has(detected.mime)) {
       throw new HttpException({ msg: 'Unsupported file type.' }, 400);
@@ -163,8 +170,33 @@ export class PublicIntegrationsController {
     );
     body.type = rawBody.type;
 
+    if (
+      process.env.RESTRICT_UPLOAD_DOMAINS &&
+      body.posts.some((p) =>
+        p.value.some((a) =>
+          a.image.some(
+            (i) => i.path.indexOf(process.env.RESTRICT_UPLOAD_DOMAINS) === -1
+          )
+        )
+      )
+    ) {
+      throw new HttpException(
+        {
+          msg: `All media must be uploaded through our upload API route and contain the domain: ${process.env.RESTRICT_UPLOAD_DOMAINS}`,
+        },
+        400
+      );
+    }
+
+    const allowedCreationMethods = ['CLI', 'API'] as const;
+    const creationMethod = allowedCreationMethods.includes(
+      rawBody.creationMethod
+    )
+      ? (rawBody.creationMethod as 'CLI' | 'API')
+      : 'API';
+
     console.log(JSON.stringify(body, null, 2));
-    return this._postsService.createPost(org.id, body);
+    return this._postsService.createPost(org.id, body, creationMethod);
   }
 
   @Delete('/posts/:id')
@@ -234,7 +266,9 @@ export class PublicIntegrationsController {
 
     if (integrationProvider.externalUrl) {
       throw new HttpException(
-        { msg: 'This integration requires an external URL and is not supported via the public API' },
+        {
+          msg: 'This integration requires an external URL and is not supported via the public API',
+        },
         400
       );
     }
@@ -356,6 +390,16 @@ export class PublicIntegrationsController {
   ) {
     Sentry.metrics.count('public_api-request', 1);
     return this._postsService.getMissingContent(org.id, id);
+  }
+
+  @Put('/posts/:id/status')
+  async changePostStatus(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: ChangePostStatusDto
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    return this._postsService.changePostStatus(org.id, id, body.status);
   }
 
   @Put('/posts/:id/release-id')
